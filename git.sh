@@ -25,5 +25,7 @@ git add .gitignore
 # Add this script
 git add git.sh
 
+git status
+
 # Commit the changes
 git commit -m "$COMMIT_MESSAGE"
