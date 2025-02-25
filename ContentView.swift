@@ -3,7 +3,14 @@ import CoreBluetooth
 
 class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var centralManager: CBCentralManager!
-    private var heartRatePeripheral: CBPeripheral?
+    @Published var heartRatePeripheral: CBPeripheral?
+    @Published var discoveredDevices: [(peripheral: CBPeripheral, name: String)] = []
+    
+    #if DEBUG
+    private let debugScanAllDevices = true
+    #else
+    private let debugScanAllDevices = false
+    #endif
     
     @Published var heartRate: String = "--"
     @Published var isScanning = false
@@ -15,6 +22,7 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     
     // Service UUIDs
     let heartRateServiceCBUUID = CBUUID(string: "0x180D")
+    let ouraServiceCBUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E") // Oura Ring service UUID
     let heartRateMeasurementCharacteristicCBUUID = CBUUID(string: "0x2A37")
     let batteryServiceCBUUID = CBUUID(string: "180F")
     let batteryLevelCharacteristicCBUUID = CBUUID(string: "2A19")
@@ -43,9 +51,21 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             return
         }
         
+        discoveredDevices.removeAll()
         isScanning = true
-        statusMessage = "Scanning..."
+        
+        #if DEBUG
+        if debugScanAllDevices {
+            // Debug mode: scan for all devices
+            centralManager.scanForPeripherals(withServices: nil)
+            statusMessage = "Scanning... (Debug: All Devices)"
+        } else {
+            centralManager.scanForPeripherals(withServices: [heartRateServiceCBUUID])
+        }
+        #else
+        // Production mode: only scan for heart rate devices
         centralManager.scanForPeripherals(withServices: [heartRateServiceCBUUID])
+        #endif
     }
     
     func stopScanning() {
@@ -55,13 +75,27 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        if peripheral.name?.contains("HRM") ?? false {
-            heartRatePeripheral = peripheral
-            heartRatePeripheral?.delegate = self
-            centralManager.stopScan()
-            centralManager.connect(peripheral)
-            statusMessage = "Found HRM device, connecting..."
+        let name = peripheral.name ?? "Unknown Device"
+        if !discoveredDevices.contains(where: { $0.peripheral.identifier == peripheral.identifier }) {
+            discoveredDevices.append((peripheral: peripheral, name: name))
         }
+        
+        // If we don't have a connected device yet, connect to this one
+        if heartRatePeripheral == nil {
+            connectTo(peripheral: peripheral)
+        }
+    }
+    
+    func connectTo(peripheral: CBPeripheral) {
+        // Disconnect current device if any
+        if let current = heartRatePeripheral {
+            centralManager.cancelPeripheralConnection(current)
+        }
+        
+        heartRatePeripheral = peripheral
+        heartRatePeripheral?.delegate = self
+        centralManager.connect(peripheral)
+        statusMessage = "Connecting to \(peripheral.name ?? "Unknown Device")..."
     }
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -171,15 +205,6 @@ struct DebugView: View {
         return String(format: "%.1f seconds ago", timeInterval)
     }
     
-    // Keep this for future debugging if needed
-    var batteryUpdateTime: String {
-        guard let lastUpdate = bluetoothManager.batteryLastUpdated else {
-            return "Never"
-        }
-        let timeInterval = Date().timeIntervalSince(lastUpdate)
-        return String(format: "%.1f seconds ago", timeInterval)
-    }
-    
     var batteryText: String {
         if bluetoothManager.batteryLevel >= 0 {
             return "\(bluetoothManager.batteryStatus) (\(bluetoothManager.batteryLevel)%)"
@@ -195,14 +220,6 @@ struct DebugView: View {
                 Text(batteryText)
             }
             
-            // Keeping this HStack commented out for future debugging if needed
-            // HStack {
-            //     Text("Battery Updated:")
-            //     Text(batteryUpdateTime)
-            //         .monospacedDigit()
-            // }
-            // .id(currentTime)
-            
             HStack {
                 Text("Last Update:")
                 Text(timeSinceLastUpdate)
@@ -212,6 +229,40 @@ struct DebugView: View {
             
             Text(bluetoothManager.statusMessage)
                 .foregroundColor(.gray)
+            
+            // Available Devices Section
+            if !bluetoothManager.discoveredDevices.isEmpty {
+                Text("Available Devices:")
+                    .foregroundColor(.gray)
+                    .padding(.top, 4)
+                
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach(bluetoothManager.discoveredDevices, id: \.peripheral.identifier) { device in
+                            HStack {
+                                Text(device.name)
+                                    .foregroundColor(device.peripheral.identifier == bluetoothManager.heartRatePeripheral?.identifier ? .green : .white)
+                                if device.peripheral.identifier == bluetoothManager.heartRatePeripheral?.identifier {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                }
+                                Spacer()
+                                if device.peripheral.identifier != bluetoothManager.heartRatePeripheral?.identifier {
+                                    Button("Connect") {
+                                        bluetoothManager.connectTo(peripheral: device.peripheral)
+                                    }
+                                    .foregroundColor(.blue)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                            .background(Color.black.opacity(0.3))
+                            .cornerRadius(8)
+                        }
+                    }
+                }
+                .frame(maxHeight: 200)  // Limit height of scroll area
+            }
             
             Button(action: {
                 if bluetoothManager.isScanning {
@@ -272,21 +323,6 @@ struct DebugView: View {
         .cornerRadius(10)
         .onReceive(timer) { _ in
             currentTime = Date()
-        }
-    }
-    
-    var batteryStatusColor: Color {
-        switch bluetoothManager.batteryStatus {
-        case "Good":
-            return .green
-        case "OK":
-            return .yellow
-        case "Low":
-            return .orange
-        case "Critical":
-            return .red
-        default:
-            return .gray
         }
     }
 }
