@@ -4,7 +4,9 @@ import CoreBluetooth
 class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var centralManager: CBCentralManager!
     @Published var heartRatePeripheral: CBPeripheral?
-    @Published var discoveredDevices: [(peripheral: CBPeripheral, name: String)] = []
+    @Published var discoveredDevices: [(peripheral: CBPeripheral, name: String, isHeartRateDevice: Bool)] = []
+    private var scanStopTimer: Timer?
+    private var pendingConnection: CBPeripheral?
     
     #if DEBUG
     private let debugScanAllDevices = true
@@ -21,11 +23,16 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     @Published var batteryLastUpdated: Date?
     
     // Service UUIDs
-    let heartRateServiceCBUUID = CBUUID(string: "0x180D")
+    let batteryServiceCBUUID = CBUUID(string: "180F")  // Standard battery service
+    let batteryLevelCharacteristicCBUUID = CBUUID(string: "2A19")  // Standard battery level characteristic
+    let heartRateServiceCBUUID = CBUUID(string: "180D")
+    let heartRateMeasurementCharacteristicCBUUID = CBUUID(string: "2A37")
     let ouraServiceCBUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E") // Oura Ring service UUID
-    let heartRateMeasurementCharacteristicCBUUID = CBUUID(string: "0x2A37")
-    let batteryServiceCBUUID = CBUUID(string: "180F")
-    let batteryLevelCharacteristicCBUUID = CBUUID(string: "2A19")
+    
+    // Known battery service UUIDs for different devices
+    let knownBatteryServices: [CBUUID] = [
+        CBUUID(string: "180F")  // Standard battery service
+    ]
     
     override init() {
         super.init()
@@ -36,12 +43,15 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         switch central.state {
         case .poweredOn:
             statusMessage = "Bluetooth is powered on"
+            startScanning()  // Auto-start scanning when Bluetooth is ready
         case .poweredOff:
             statusMessage = "Bluetooth is powered off"
         case .unauthorized:
-            statusMessage = "Bluetooth permission denied"
+            statusMessage = "Bluetooth is not authorized"
+        case .unsupported:
+            statusMessage = "Bluetooth is not supported"
         default:
-            statusMessage = "Bluetooth is not available"
+            statusMessage = "Unknown state"
         }
     }
     
@@ -66,41 +76,80 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         // Production mode: only scan for heart rate devices
         centralManager.scanForPeripherals(withServices: [heartRateServiceCBUUID])
         #endif
+        
+        // Cancel any existing timer when starting a new scan
+        scanStopTimer?.invalidate()
+        scanStopTimer = nil
     }
     
     func stopScanning() {
-        centralManager.stopScan()
         isScanning = false
-        statusMessage = "Scan stopped"
+        centralManager.stopScan()
+        scanStopTimer?.invalidate()
+        scanStopTimer = nil
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        let name = peripheral.name ?? "Unknown Device"
+        // Only add devices that have a name
+        guard let name = peripheral.name, !name.isEmpty else { return }
+        
+        // Check if this is a heart rate device
+        let isHeartRateDevice = advertisementData[CBAdvertisementDataServiceUUIDsKey] != nil &&
+            (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.contains(heartRateServiceCBUUID) == true
+        
+        // Check if we already have this device
         if !discoveredDevices.contains(where: { $0.peripheral.identifier == peripheral.identifier }) {
-            discoveredDevices.append((peripheral: peripheral, name: name))
+            discoveredDevices.append((peripheral: peripheral, name: name, isHeartRateDevice: isHeartRateDevice))
         }
         
-        // If we don't have a connected device yet, connect to this one
-        if heartRatePeripheral == nil {
+        // If we don't have a connected device yet and this is a heart rate device, connect to it
+        if heartRatePeripheral == nil && isHeartRateDevice {
             connectTo(peripheral: peripheral)
         }
     }
     
     func connectTo(peripheral: CBPeripheral) {
-        // Disconnect current device if any
+        // If we have a current connection, disconnect it first
         if let current = heartRatePeripheral {
+            pendingConnection = peripheral
             centralManager.cancelPeripheralConnection(current)
+            return
         }
         
+        // Otherwise connect directly
         heartRatePeripheral = peripheral
         heartRatePeripheral?.delegate = self
         centralManager.connect(peripheral)
         statusMessage = "Connecting to \(peripheral.name ?? "Unknown Device")..."
+        
+        // Schedule stopping scan after 60 seconds
+        scanStopTimer?.invalidate()
+        scanStopTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: false) { [weak self] _ in
+            self?.stopScanning()
+            self?.statusMessage = "Scan stopped after 60s of connection"
+        }
     }
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        statusMessage = "Connected to HRM"
-        peripheral.discoverServices([heartRateServiceCBUUID, batteryServiceCBUUID])
+        statusMessage = "Connected to \(peripheral.name ?? "Unknown Device")"
+        peripheral.discoverServices(nil)
+    }
+    
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        statusMessage = "Failed to connect to \(peripheral.name ?? "Unknown Device")"
+        heartRatePeripheral = nil
+    }
+    
+    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        statusMessage = "Disconnected from \(peripheral.name ?? "Unknown Device")"
+        heartRatePeripheral = nil
+        batteryStatus = "No device connected"
+        
+        // If we have a pending connection, connect to it now
+        if let pending = pendingConnection {
+            pendingConnection = nil
+            connectTo(peripheral: pending)
+        }
     }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -109,10 +158,36 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             return
         }
         
-        guard let services = peripheral.services else { return }
+        print("Device: \(peripheral.name ?? "Unknown")")
+        if let services = peripheral.services {
+            for service in services {
+                print("Found service: \(service)")
+            }
+        }
         
-        for service in services {
-            peripheral.discoverCharacteristics([heartRateMeasurementCharacteristicCBUUID, batteryLevelCharacteristicCBUUID], for: service)
+        // Look for battery service on any connected device
+        if let batteryService = peripheral.services?.first(where: { service in
+            // Check against known battery service UUIDs
+            if knownBatteryServices.contains(service.uuid) {
+                return true
+            }
+            
+            // Check for friendly name "Battery"
+            if service.uuid.description == "Battery" {
+                return true
+            }
+            
+            return false
+        }) {
+            peripheral.discoverCharacteristics([batteryLevelCharacteristicCBUUID], for: batteryService)
+            batteryStatus = "Reading..."
+        } else {
+            batteryStatus = "No battery info"
+        }
+        
+        // For heart rate devices, also look for heart rate service
+        if let heartRateService = peripheral.services?.first(where: { $0.uuid == heartRateServiceCBUUID }) {
+            peripheral.discoverCharacteristics([heartRateMeasurementCharacteristicCBUUID], for: heartRateService)
         }
     }
     
@@ -148,43 +223,33 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             return
         }
         
-        guard let data = characteristic.value else { return }
+        if characteristic.uuid == batteryLevelCharacteristicCBUUID,
+           let batteryData = characteristic.value,
+           batteryData.count >= 1 {
+            let batteryLevel = batteryData[0]
+            batteryStatus = "\(batteryLevel)%"
+        }
         
-        if characteristic.uuid == heartRateMeasurementCharacteristicCBUUID {
-            let firstByte = data[0]
-            let isUint16 = ((firstByte & 0x01) == 0x01)
-            
-            var hrValue: UInt16
-            if isUint16 {
-                hrValue = UInt16(data[1]) + (UInt16(data[2]) << 8)
-            } else {
-                hrValue = UInt16(data[1])
+        if characteristic.uuid == heartRateMeasurementCharacteristicCBUUID,
+           let heartRateData = characteristic.value {
+            var heartRate: UInt16 = 0
+            let bytesRead = heartRateData.withUnsafeBytes { bytes in
+                if heartRateData[0] & 0x01 == 0 {
+                    // First bit is 0, so the heart rate is in the second byte
+                    heartRate = UInt16(bytes[1])
+                    return 2
+                } else {
+                    // First bit is 1, so the heart rate is in the second and third bytes
+                    heartRate = UInt16(bytes[1]) | (UInt16(bytes[2]) << 8)
+                    return 3
+                }
             }
             
-            DispatchQueue.main.async {
-                self.heartRate = String(hrValue)
-                self.lastUpdateTime = Date()
-            }
-        } else if characteristic.uuid == batteryLevelCharacteristicCBUUID {
-            let rawValue = data[0]
-            let level = Int(rawValue)
-            
-            // Convert numeric level to status description
-            let status: String
-            if level >= 75 {
-                status = "Good"
-            } else if level >= 25 {
-                status = "OK"
-            } else if level >= 10 {
-                status = "Low"
-            } else {
-                status = "Critical"
-            }
-            
-            DispatchQueue.main.async {
-                self.batteryStatus = status
-                self.batteryLevel = level
-                self.batteryLastUpdated = Date()
+            if bytesRead > 0 {
+                lastUpdateTime = Date()
+                DispatchQueue.main.async {
+                    self.heartRate = String(heartRate)
+                }
             }
         }
     }
@@ -207,7 +272,7 @@ struct DebugView: View {
     
     var batteryText: String {
         if bluetoothManager.batteryLevel >= 0 {
-            return "\(bluetoothManager.batteryStatus) (\(bluetoothManager.batteryLevel)%)"
+            return "\(bluetoothManager.batteryStatus)"
         } else {
             return bluetoothManager.batteryStatus
         }
@@ -238,13 +303,27 @@ struct DebugView: View {
                 
                 ScrollView {
                     VStack(spacing: 8) {
-                        ForEach(bluetoothManager.discoveredDevices, id: \.peripheral.identifier) { device in
+                        ForEach(bluetoothManager.discoveredDevices.sorted { device1, device2 in
+                            // Sort heart rate devices to the top
+                            if device1.isHeartRateDevice && !device2.isHeartRateDevice {
+                                return true
+                            }
+                            if !device1.isHeartRateDevice && device2.isHeartRateDevice {
+                                return false
+                            }
+                            // For devices of the same type, sort by name
+                            return device1.name < device2.name
+                        }, id: \.peripheral.identifier) { device in
                             HStack {
                                 Text(device.name)
                                     .foregroundColor(device.peripheral.identifier == bluetoothManager.heartRatePeripheral?.identifier ? .green : .white)
                                 if device.peripheral.identifier == bluetoothManager.heartRatePeripheral?.identifier {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundColor(.green)
+                                }
+                                if device.isHeartRateDevice {
+                                    Image(systemName: "heart.fill")
+                                        .foregroundColor(.red)
                                 }
                                 Spacer()
                                 if device.peripheral.identifier != bluetoothManager.heartRatePeripheral?.identifier {
@@ -256,7 +335,7 @@ struct DebugView: View {
                             }
                             .padding(.vertical, 4)
                             .padding(.horizontal, 8)
-                            .background(Color.black.opacity(0.3))
+                            .background(device.isHeartRateDevice ? Color.blue.opacity(0.3) : Color.black.opacity(0.3))
                             .cornerRadius(8)
                         }
                     }
@@ -271,13 +350,22 @@ struct DebugView: View {
                     bluetoothManager.startScanning()
                 }
             }) {
-                Text(bluetoothManager.isScanning ? "Stop Scanning" : "Start Scanning")
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .padding()
-                    .frame(maxWidth: .infinity)
-                    .background(Color.blue)
-                    .cornerRadius(10)
+                HStack {
+                    if bluetoothManager.isScanning {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(0.8)
+                        Text("Scanning")
+                    } else {
+                        Text("Start Scanning")
+                    }
+                }
+                .font(.headline)
+                .foregroundColor(.white)
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(Color.blue)
+                .cornerRadius(10)
             }
             
             HStack(spacing: 20) {
