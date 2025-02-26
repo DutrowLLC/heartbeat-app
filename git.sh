@@ -30,3 +30,6 @@ git status
 
 # Commit the changes
 git commit -m "$COMMIT_MESSAGE"
+
+# Push
+git push
