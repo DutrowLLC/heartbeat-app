@@ -21,6 +21,7 @@ git add process_icon.py
 # Add documentation and config files
 git add README.md
 git add .gitignore
+git add privacy-policy.md
 
 # Add this script
 git add git.sh
