@@ -2,7 +2,7 @@
 
 A simple, night-mode friendly heart rate monitor app for iOS.
 
-https://user-images.githubusercontent.com/YOUR_USERNAME/heartbeat-app/assets/demo.mp4
+https://github.com/user-attachments/assets/c89463c9-0e7e-4668-8b1b-a07ff7e693f0
 
 ## Features
 - Real-time heart rate monitoring
