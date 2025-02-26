@@ -460,6 +460,7 @@ struct ContentView: View {
             Spacer()
         }
         .preferredColorScheme(.dark)
+        .persistentSystemOverlays(!showControls ? .hidden : .visible)
     }
 }
 
