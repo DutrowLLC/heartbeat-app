@@ -53,6 +53,7 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         self.lastUpdateTime = Date()
         self.batteryLastUpdated = Date()
         statusMessage = "Connected to HRMPro+:893594"
+        self.heartRate = "72"  // or any value you want
 
     }
     
@@ -313,51 +314,61 @@ struct DebugView: View {
                 .foregroundColor(.gray)
             
             // Available Devices Section
-            if !bluetoothManager.discoveredDevices.isEmpty {
-                Text("Available Devices:")
-                    .foregroundColor(.gray)
-                    .padding(.top, 4)
+            if( true ) {    
+                if(AppConfig.SCREENSHOT_MODE) {    
+                    MockDevicesView()
+                }
+                else{
+                    DevicesView(bluetoothManager: bluetoothManager)
+                }
                 
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(bluetoothManager.discoveredDevices.sorted { device1, device2 in
-                            // Sort heart rate devices to the top
-                            if device1.isHeartRateDevice && !device2.isHeartRateDevice {
-                                return true
-                            }
-                            if !device1.isHeartRateDevice && device2.isHeartRateDevice {
-                                return false
-                            }
-                            // For devices of the same type, sort by name
-                            return device1.name < device2.name
-                        }, id: \.peripheral.identifier) { device in
-                            HStack {
-                                Text(device.name)
-                                    .foregroundColor(device.peripheral.identifier == bluetoothManager.heartRatePeripheral?.identifier ? .green : .white)
-                                if device.peripheral.identifier == bluetoothManager.heartRatePeripheral?.identifier {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.green)
+            }else{
+                if !bluetoothManager.discoveredDevices.isEmpty {
+                    Text("Available Devices:")
+                        .foregroundColor(.gray)
+                        .padding(.top, 4)
+                    
+                    ScrollView {
+                        VStack(spacing: 8) {
+                            ForEach(bluetoothManager.discoveredDevices.sorted { device1, device2 in
+                                // Sort heart rate devices to the top
+                                if device1.isHeartRateDevice && !device2.isHeartRateDevice {
+                                    return true
                                 }
-                                if device.isHeartRateDevice {
-                                    Image(systemName: "heart.fill")
-                                        .foregroundColor(.red)
+                                if !device1.isHeartRateDevice && device2.isHeartRateDevice {
+                                    return false
                                 }
-                                Spacer()
-                                if device.peripheral.identifier != bluetoothManager.heartRatePeripheral?.identifier {
-                                    Button("Connect") {
-                                        bluetoothManager.connectTo(peripheral: device.peripheral)
+                                // For devices of the same type, sort by name
+                                return device1.name < device2.name
+                            }, id: \.peripheral.identifier) { device in
+                                HStack {
+                                    Text(device.name)
+                                        .foregroundColor(device.peripheral.identifier == bluetoothManager.heartRatePeripheral?.identifier ? .green : .white)
+                                    if device.peripheral.identifier == bluetoothManager.heartRatePeripheral?.identifier {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.green)
                                     }
-                                    .foregroundColor(.blue)
+                                    if device.isHeartRateDevice {
+                                        Image(systemName: "heart.fill")
+                                            .foregroundColor(.red)
+                                    }
+                                    Spacer()
+                                    if device.peripheral.identifier != bluetoothManager.heartRatePeripheral?.identifier {
+                                        Button("Connect") {
+                                            bluetoothManager.connectTo(peripheral: device.peripheral)
+                                        }
+                                        .foregroundColor(.blue)
+                                    }
                                 }
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 8)
+                                .background(device.isHeartRateDevice ? Color.blue.opacity(0.3) : Color.black.opacity(0.3))
+                                .cornerRadius(8)
                             }
-                            .padding(.vertical, 4)
-                            .padding(.horizontal, 8)
-                            .background(device.isHeartRateDevice ? Color.blue.opacity(0.3) : Color.black.opacity(0.3))
-                            .cornerRadius(8)
                         }
                     }
+                    .frame(maxHeight: 200)  // Limit height of scroll area
                 }
-                .frame(maxHeight: 200)  // Limit height of scroll area
             }
             
             Button(action: {
