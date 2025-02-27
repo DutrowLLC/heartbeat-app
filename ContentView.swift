@@ -37,6 +37,23 @@ class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     override init() {
         super.init()
         centralManager = CBCentralManager(delegate: self, queue: nil)
+
+        // Refresh dummy values every 0.5 seconds
+        if AppConfig.SCREENSHOT_MODE {
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                self?.addDummyValues()
+            }
+        }
+    }
+
+    func addDummyValues() {
+        // Add dummy values here
+        self.batteryLevel = AppConfig.MockData.batteryLevel
+        self.batteryStatus = "\(self.batteryLevel)%"
+        self.lastUpdateTime = Date()
+        self.batteryLastUpdated = Date()
+        statusMessage = "Connected to HRMPro+:893594"
+
     }
     
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
