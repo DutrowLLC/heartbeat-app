@@ -22,6 +22,9 @@ git add process_icon.py
 git add README.md
 git add .gitignore
 git add privacy-policy.md
+git add Config.swift
+git add DevicesView.swift
+git add exportOptions.plist
 
 # Add this script
 git add git.sh
